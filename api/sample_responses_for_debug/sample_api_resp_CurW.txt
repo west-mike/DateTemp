@@ -1,0 +1,73 @@
+{
+  "latitude": 42.292328,
+  "longitude": -83.736755,
+  "generationtime_ms": 0.35011768341064453,
+  "utc_offset_seconds": -14400,
+  "timezone": "America/New_York",
+  "timezone_abbreviation": "GMT-4",
+  "elevation": 265.0,
+  
+  "current_units": {
+    "time": "iso8601",
+    "interval": "seconds",
+    "temperature_2m": "°F",
+    "is_day": "",
+    "relative_humidity_2m": "%",
+    "apparent_temperature": "°F",
+    "precipitation": "inch",
+    "rain": "inch",
+    "showers": "inch",
+    "snowfall": "inch",
+    "weather_code": "wmo code",
+    "cloud_cover": "%",
+    "wind_speed_10m": "mp/h",
+    "wind_direction_10m": "°",
+    "wind_gusts_10m": "mp/h"
+  },
+  
+  "current": {
+    "time": "2025-03-28T20:45",
+    "interval": 900,
+    "temperature_2m": 55.4,
+    "is_day": 0,
+    "relative_humidity_2m": 86,
+    "apparent_temperature": 53.4,
+    "precipitation": 0.000,
+    "rain": 0.000,
+    "showers": 0.000,
+    "snowfall": 0.000,
+    "weather_code": 0,
+    "cloud_cover": 0,
+    "wind_speed_10m": 5.7,
+    "wind_direction_10m": 169,
+    "wind_gusts_10m": 15.2
+  },
+  
+  "hourly_units": {
+    "time": "iso8601",
+    "temperature_2m": "°F",
+    "precipitation": "inch",
+    "precipitation_probability": "%",
+    "cloud_cover": "%",
+    "visibility": "ft",
+    "wind_gusts_10m": "mp/h",
+    "relative_humidity_2m": "%",
+    "apparent_temperature": "°F",
+    "wind_direction_10m": "°",
+    "wind_speed_10m": "mp/h"
+  },
+  
+  "hourly": {
+    "time": ["2025-03-25T00:00", "2025-03-25T01:00", /* ... many time entries ... */],
+    "temperature_2m": [31.8, 31.4, /* ... many temperature entries ... */],
+    "precipitation": [0.000, 0.000, /* ... many precipitation entries ... */],
+    "precipitation_probability": [0, 0, /* ... many probability entries ... */],
+    "cloud_cover": [1, 1, /* ... many cloud cover entries ... */],
+    "visibility": [88254.594, 83661.414, /* ... many visibility entries ... */],
+    "wind_gusts_10m": [26.6, 25.9, /* ... many wind gust entries ... */],
+    "relative_humidity_2m": [65, 67, /* ... many humidity entries ... */],
+    "apparent_temperature": [22.0, 22.7, /* ... many apparent temperature entries ... */],
+    "wind_direction_10m": [274, 256, /* ... many wind direction entries ... */],
+    "wind_speed_10m": [10.8, 8.5, /* ... many wind speed entries ... */]
+  }
+}

@@ -1,0 +1,328 @@
+package main
+
+import (
+	"encoding/json"
+	"fmt"
+	"io"
+	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
+	"time"
+
+	"github.com/gin-gonic/gin"
+)
+
+// album represents data about a record album.
+type album struct {
+	ID     string  `json:"id"`
+	Title  string  `json:"title"`
+	Artist string  `json:"artist"`
+	Price  float64 `json:"price"`
+}
+
+// albums slice to seed record album data.
+var albums = []album{
+	{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
+	{ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
+	{ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99},
+}
+
+// base api url for open-meteo current forecast api
+var current_weather_url = "https://api.open-meteo.com/v1/forecast"
+
+// hard-code lat and long for ann arbor for now, maybe others in future
+var a2_lat float64 = 42.2808
+var a2_long float64 = -83.732124
+
+var refreshCurWeatherQuery = currWeatherQuery{
+	Latitude:          a2_lat,
+	Longitude:         a2_long,
+	Hourly:            []string{"temperature_2m", "precipitation", "precipitation_probability", "cloud_cover", "visibility", "wind_gusts_10m", "relative_humidity_2m", "apparent_temperature", "wind_direction_10m", "wind_speed_10m"},
+	Current:           []string{"temperature_2m", "is_day", "relative_humidity_2m", "apparent_temperature", "precipitation", "rain", "showers", "snowfall", "weather_code", "cloud_cover", "wind_speed_10m", "wind_direction_10m", "wind_gusts_10m"},
+	Timezone:          "America/New_York",
+	PastDays:          3,
+	WindSpeedUnit:     "mph",
+	TemperatureUnit:   "fahrenheit",
+	PrecipitationUnit: "inch",
+}
+var history2000Query = historyWeatherQuery{
+	Latitude:  a2_lat,
+	Longitude: a2_long,
+	StartDate: "2000-01-01",
+	// in future make this a variable thats today -5 days
+	EndDate:           "2025-3-27",
+	Daily:             []string{"weather_code", "temperature_2m_mean", "temperature_2m_max", "temperature_2m_min", "apparent_temperature_mean", "apparent_temperature_max", "apparent_temperature_min", "sunrise", "sunset", "precipitation_sum", "precipitation_hours"},
+	Hourly:            []string{"temperature_2m", "relative_humidity_2m", "apparent_temperature", "precipitation", "weather_code"},
+	WindSpeedUnit:     "mph",
+	TemperatureUnit:   "fahrenheit",
+	PrecipitationUnit: "inch",
+}
+var currentWeatherData = currentWeatherObject{}
+var historyWeatherData = historyWeatherObject{}
+
+func main() {
+	router := gin.Default()
+	router.GET("/albums", getAlbums)
+	router.GET("/albums/:id", getAlbumByID)
+	router.POST("/albums", postAlbums)
+	router.GET("/currentweather", getCurrentWeather)
+	router.GET("/populatehistory", populateHistory)
+	router.Run("localhost:8080")
+}
+
+// getAlbums responds with the list of all albums as JSON.
+func getAlbums(c *gin.Context) {
+	c.IndentedJSON(http.StatusOK, albums)
+}
+
+// postAlbums adds an album from JSON received in the request body.
+func postAlbums(c *gin.Context) {
+	var newAlbum album
+
+	// Call BindJSON to bind the received JSON to
+	// newAlbum.
+	if err := c.BindJSON(&newAlbum); err != nil {
+		return
+	}
+
+	// Add the new album to the slice.
+	albums = append(albums, newAlbum)
+	c.IndentedJSON(http.StatusCreated, newAlbum)
+}
+
+// getAlbumByID locates the album whose ID value matches the id
+// parameter sent by the client, then returns that album as a response.
+func getAlbumByID(c *gin.Context) {
+	id := c.Param("id")
+
+	// Loop over the list of albums, looking for
+	// an album whose ID value matches the parameter.
+	for _, a := range albums {
+		if a.ID == id {
+			c.IndentedJSON(http.StatusOK, a)
+			return
+		}
+	}
+	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
+}
+
+func getCurrentWeather(c *gin.Context) {
+	// want to query open-meteo for the weather right now
+	// theoretically, this call runs every 5 minutes or so
+	// we can also package in the updates for the weather forecast for 24 hours to save a call
+
+	// create http client
+	client := &http.Client{}
+	// establish base request headers and target
+	req, err := http.NewRequest("GET", current_weather_url, nil)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create request"})
+		return
+	}
+
+	// Add query parameters to the request
+	query := req.URL.Query()
+	query.Add("latitude", fmt.Sprintf("%f", refreshCurWeatherQuery.Latitude))
+	query.Add("longitude", fmt.Sprintf("%f", refreshCurWeatherQuery.Longitude))
+	query.Add("hourly", strings.Join(refreshCurWeatherQuery.Hourly, ","))
+	query.Add("current", strings.Join(refreshCurWeatherQuery.Current, ","))
+	query.Add("timezone", refreshCurWeatherQuery.Timezone)
+	query.Add("past_days", fmt.Sprintf("%d", refreshCurWeatherQuery.PastDays))
+	query.Add("wind_speed_unit", refreshCurWeatherQuery.WindSpeedUnit) // Changed from "windspeed_unit" to "wind_speed_unit"
+	query.Add("temperature_unit", refreshCurWeatherQuery.TemperatureUnit)
+	query.Add("precipitation_unit", refreshCurWeatherQuery.PrecipitationUnit)
+	req.URL.RawQuery = query.Encode()
+
+	// Debug: Print the complete URL being requested
+	if gin.IsDebugging() {
+		fmt.Printf("[DEBUG] Request URL: %s\n", req.URL.String())
+	}
+
+	// Make the HTTP request
+	resp, err := client.Do(req)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to fetch weather data"})
+		return
+	}
+	// close the response body when done, presents resource leak
+	defer resp.Body.Close()
+
+	// Check for non-200 status code
+	if resp.StatusCode != http.StatusOK {
+		// Read the error response body
+		var apiError struct {
+			Error  bool   `json:"error"`
+			Reason string `json:"reason"`
+		}
+
+		// Try to decode the error response
+		if err := json.NewDecoder(resp.Body).Decode(&apiError); err != nil {
+			// Log the error to console in debug mode
+			if gin.IsDebugging() {
+				fmt.Printf("[ERROR] Failed to decode API error: %v\n", err)
+				fmt.Printf("[ERROR] Status code: %d\n", resp.StatusCode)
+			}
+
+			// If we can't decode the error, return a generic one with the status code
+			c.IndentedJSON(http.StatusBadGateway, gin.H{
+				"error":       "unexpected response from weather API",
+				"status_code": resp.StatusCode,
+			})
+			return
+		}
+
+		// Log the API error to console in debug mode
+		if gin.IsDebugging() {
+			fmt.Printf("[ERROR] Weather API error: %s\n", apiError.Reason)
+			fmt.Printf("[ERROR] Full details: %+v\n", apiError)
+		}
+
+		// Return the actual error from the API with the same status code
+		c.IndentedJSON(resp.StatusCode, gin.H{
+			"error":   apiError.Reason,
+			"details": apiError,
+		})
+		return
+	} else {
+		// Log successful response in debug mode
+		if gin.IsDebugging() {
+			// Read the response body
+			fmt.Printf("[DEBUG] Successful response from weather API: %s\n", resp.Status)
+		}
+	}
+
+	// Decode the response body into currentWeatherData
+	if err := json.NewDecoder(resp.Body).Decode(&currentWeatherData); err != nil {
+		if gin.IsDebugging() {
+			fmt.Printf("[ERROR] Failed to decode response: %v\n", err)
+		}
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to decode weather data"})
+		return
+	}
+	// Return the current weather data as JSON
+	c.IndentedJSON(http.StatusOK, currentWeatherData)
+	//TODO: Reformat the hourly data in a json array with each hour and then each category within that hour
+	///TODO: Convert Weather codes to human-readable strings
+}
+
+// grab all weather from 2000-now and populate the history in the database for a given location
+func populateHistory(c *gin.Context) {
+	// Log the start of the operation
+	if gin.IsDebugging() {
+		fmt.Println("[INFO] Starting historical weather data download for Ann Arbor...")
+	}
+
+	// Create output directory if it doesn't exist
+	historyDir := "history/2000"
+	if err := os.MkdirAll(historyDir, 0755); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create history directory"})
+		return
+	}
+
+	// URL for historical weather data
+	historyURL := "https://archive-api.open-meteo.com/v1/archive"
+
+	// Create HTTP client with a longer timeout due to the large response size
+	client := &http.Client{
+		Timeout: 120 * time.Second, // 2 minute timeout for this large request
+	}
+
+	// Create request
+	req, err := http.NewRequest("GET", historyURL, nil)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create request"})
+		return
+	}
+
+	// Build query parameters
+	query := req.URL.Query()
+	query.Add("latitude", fmt.Sprintf("%f", a2_lat))
+	query.Add("longitude", fmt.Sprintf("%f", a2_long))
+	query.Add("start_date", history2000Query.StartDate)
+	query.Add("end_date", history2000Query.EndDate)
+	query.Add("daily", strings.Join(history2000Query.Daily, ","))
+	query.Add("hourly", strings.Join(history2000Query.Hourly, ","))
+	query.Add("wind_speed_unit", history2000Query.WindSpeedUnit)
+	query.Add("temperature_unit", history2000Query.TemperatureUnit)
+	query.Add("precipitation_unit", history2000Query.PrecipitationUnit)
+	req.URL.RawQuery = query.Encode()
+
+	// Log the request URL
+	if gin.IsDebugging() {
+		fmt.Printf("[DEBUG] Historical data request URL: %s\n", req.URL.String())
+	}
+
+	// Make the HTTP request
+	resp, err := client.Do(req)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to fetch historical weather data: %v", err)})
+		return
+	}
+	defer resp.Body.Close()
+
+	// Check for non-200 status code
+	if resp.StatusCode != http.StatusOK {
+		var apiError struct {
+			Error  bool   `json:"error"`
+			Reason string `json:"reason"`
+		}
+
+		// Try to decode the error response
+		if err := json.NewDecoder(resp.Body).Decode(&apiError); err != nil {
+			if gin.IsDebugging() {
+				fmt.Printf("[ERROR] Failed to decode API error: %v\n", err)
+				fmt.Printf("[ERROR] Status code: %d\n", resp.StatusCode)
+			}
+			c.IndentedJSON(http.StatusBadGateway, gin.H{
+				"error":       "unexpected response from weather API",
+				"status_code": resp.StatusCode,
+			})
+			return
+		}
+
+		// Log and return the error
+		if gin.IsDebugging() {
+			fmt.Printf("[ERROR] Weather API error: %s\n", apiError.Reason)
+		}
+		c.IndentedJSON(resp.StatusCode, gin.H{
+			"error":   apiError.Reason,
+			"details": apiError,
+		})
+		return
+	}
+
+	// Read the entire response body
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to read response body"})
+		return
+	}
+
+	// Verify it's valid JSON before saving (optional)
+	var jsonCheck interface{}
+	if err := json.Unmarshal(body, &jsonCheck); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "received invalid JSON from API"})
+		return
+	}
+
+	// Save response to file
+	filePath := filepath.Join(historyDir, "ann_arbor.json")
+	if err := os.WriteFile(filePath, body, 0644); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to save historical data to file"})
+		return
+	}
+
+	// Log success
+	if gin.IsDebugging() {
+		fmt.Printf("[INFO] Successfully saved historical weather data to %s\n", filePath)
+		fmt.Printf("[INFO] File size: %.2f MB\n", float64(len(body))/(1024*1024))
+	}
+
+	// Return success to the client
+	c.IndentedJSON(http.StatusOK, gin.H{
+		"message":         "Historical weather data successfully downloaded and saved",
+		"file_path":       filePath,
+		"file_size_bytes": len(body),
+	})
+}
