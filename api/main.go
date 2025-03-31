@@ -51,7 +51,7 @@ var history2000Query = historyWeatherQuery{
 	Longitude: a2_long,
 	StartDate: "2000-01-01",
 	// in future make this a variable thats today -5 days
-	EndDate:           "2025-3-27",
+	EndDate:           "2025-03-27",
 	Daily:             []string{"weather_code", "temperature_2m_mean", "temperature_2m_max", "temperature_2m_min", "apparent_temperature_mean", "apparent_temperature_max", "apparent_temperature_min", "sunrise", "sunset", "precipitation_sum", "precipitation_hours"},
 	Hourly:            []string{"temperature_2m", "relative_humidity_2m", "apparent_temperature", "precipitation", "weather_code"},
 	WindSpeedUnit:     "mph",
@@ -59,7 +59,6 @@ var history2000Query = historyWeatherQuery{
 	PrecipitationUnit: "inch",
 }
 var currentWeatherData = currentWeatherObject{}
-var historyWeatherData = historyWeatherObject{}
 
 func main() {
 	router := gin.Default()
@@ -68,6 +67,10 @@ func main() {
 	router.POST("/albums", postAlbums)
 	router.GET("/currentweather", getCurrentWeather)
 	router.GET("/populatehistory", populateHistory)
+	router.GET("/history", populateHistory)
+	// Add new route with dynamic filename parameter
+	router.GET("/history/migrate/hourly/:filename", migrateHourlyHistoryFile)
+	router.GET("/history/migrate/daily/:filename", migrateDailyHistoryFile)
 	router.Run("localhost:8080")
 }
 
@@ -324,5 +327,81 @@ func populateHistory(c *gin.Context) {
 		"message":         "Historical weather data successfully downloaded and saved",
 		"file_path":       filePath,
 		"file_size_bytes": len(body),
+	})
+}
+
+// migrateHistoryFile handles the /history/migrate/:filename endpoint
+// It extracts the filename and calls sendHistoryToDB
+func migrateHourlyHistoryFile(c *gin.Context) {
+	// Get filename from URL parameter
+	filename := c.Param("filename")
+
+	if filename == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "filename parameter is required"})
+		return
+	}
+
+	// Log the operation if in debug mode
+	if gin.IsDebugging() {
+		fmt.Printf("[INFO] Migrating history file: %s\n", filename)
+	}
+
+	// Define the base directory where history files are stored
+	// Adjust this path if your files are stored elsewhere
+	baseDir := "history/2000"
+
+	// Construct the full file path
+	filePath := filepath.Join(baseDir, filename)
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.IndentedJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("file not found: %s", filename)})
+		return
+	}
+
+	// Call sendHistoryToDB with the filename
+	SendHourlyHistoryToDB(filePath)
+
+	// Return success response
+	c.IndentedJSON(http.StatusOK, gin.H{
+		"message":   "Historical weather data successfully migrated to database",
+		"file_path": filePath,
+	})
+}
+
+func migrateDailyHistoryFile(c *gin.Context) {
+	// Get filename from URL parameter
+	filename := c.Param("filename")
+
+	if filename == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "filename parameter is required"})
+		return
+	}
+
+	// Log the operation if in debug mode
+	if gin.IsDebugging() {
+		fmt.Printf("[INFO] Migrating daily history file: %s\n", filename)
+	}
+
+	// Define the base directory where history files are stored
+	// Adjust this path if your files are stored elsewhere
+	baseDir := "history/2000"
+
+	// Construct the full file path
+	filePath := filepath.Join(baseDir, filename)
+
+	// Check if file exists
+	if _, err := os.Stat(filePath); os.IsNotExist(err) {
+		c.IndentedJSON(http.StatusNotFound, gin.H{"error": fmt.Sprintf("file not found: %s", filename)})
+		return
+	}
+
+	// Call sendHistoryToDB with the filename
+	SendDailyHistoryToDB(filePath)
+
+	// Return success response
+	c.IndentedJSON(http.StatusOK, gin.H{
+		"message":   "Historical Daily weather data successfully migrated to database",
+		"file_path": filePath,
 	})
 }
