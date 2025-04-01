@@ -1,9 +1,11 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -11,22 +13,9 @@ import (
 	"time"
 
 	"github.com/gin-gonic/gin"
+	"github.com/jackc/pgx/v5"
+	"github.com/joho/godotenv"
 )
-
-// album represents data about a record album.
-type album struct {
-	ID     string  `json:"id"`
-	Title  string  `json:"title"`
-	Artist string  `json:"artist"`
-	Price  float64 `json:"price"`
-}
-
-// albums slice to seed record album data.
-var albums = []album{
-	{ID: "1", Title: "Blue Train", Artist: "John Coltrane", Price: 56.99},
-	{ID: "2", Title: "Jeru", Artist: "Gerry Mulligan", Price: 17.99},
-	{ID: "3", Title: "Sarah Vaughan and Clifford Brown", Artist: "Sarah Vaughan", Price: 39.99},
-}
 
 // base api url for open-meteo current forecast api
 var current_weather_url = "https://api.open-meteo.com/v1/forecast"
@@ -61,55 +50,43 @@ var history2000Query = historyWeatherQuery{
 var currentWeatherData = currentWeatherObject{}
 
 func main() {
+	// Load .env file
+	if err := godotenv.Load(); err != nil {
+		log.Println("Warning: .env file not found, using environment variables")
+	}
+	// Test DB Connection
+	//testConnection()
 	router := gin.Default()
-	router.GET("/albums", getAlbums)
-	router.GET("/albums/:id", getAlbumByID)
-	router.POST("/albums", postAlbums)
 	router.GET("/currentweather", getCurrentWeather)
+	router.GET("/dailyhistory", grabDailyHistory)
 	router.GET("/populatehistory", populateHistory)
 	router.GET("/history", populateHistory)
-	// Add new route with dynamic filename parameter
+	// history migration routes, probably never need to use again
 	router.GET("/history/migrate/hourly/:filename", migrateHourlyHistoryFile)
 	router.GET("/history/migrate/daily/:filename", migrateDailyHistoryFile)
 	router.Run("localhost:8080")
 }
 
-// getAlbums responds with the list of all albums as JSON.
-func getAlbums(c *gin.Context) {
-	c.IndentedJSON(http.StatusOK, albums)
-}
-
-// postAlbums adds an album from JSON received in the request body.
-func postAlbums(c *gin.Context) {
-	var newAlbum album
-
-	// Call BindJSON to bind the received JSON to
-	// newAlbum.
-	if err := c.BindJSON(&newAlbum); err != nil {
-		return
+// Test the database connection and close it
+func testConnection() {
+	// Code from Supabase site to connect to DB
+	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		log.Fatalf("Failed to connect to the database: %v", err)
 	}
 
-	// Add the new album to the slice.
-	albums = append(albums, newAlbum)
-	c.IndentedJSON(http.StatusCreated, newAlbum)
-}
-
-// getAlbumByID locates the album whose ID value matches the id
-// parameter sent by the client, then returns that album as a response.
-func getAlbumByID(c *gin.Context) {
-	id := c.Param("id")
-
-	// Loop over the list of albums, looking for
-	// an album whose ID value matches the parameter.
-	for _, a := range albums {
-		if a.ID == id {
-			c.IndentedJSON(http.StatusOK, a)
-			return
-		}
+	// Test query
+	var version string
+	if err := conn.QueryRow(context.Background(), "SELECT version()").Scan(&version); err != nil {
+		conn.Close(context.Background())
+		log.Fatalf("Query failed: %v", err)
 	}
-	c.IndentedJSON(http.StatusNotFound, gin.H{"message": "album not found"})
-}
 
+	log.Println("Connected to:", version)
+
+	// Close the connection after test
+	conn.Close(context.Background())
+}
 func getCurrentWeather(c *gin.Context) {
 	// want to query open-meteo for the weather right now
 	// theoretically, this call runs every 5 minutes or so
@@ -207,6 +184,86 @@ func getCurrentWeather(c *gin.Context) {
 	c.IndentedJSON(http.StatusOK, currentWeatherData)
 	//TODO: Reformat the hourly data in a json array with each hour and then each category within that hour
 	///TODO: Convert Weather codes to human-readable strings
+}
+
+// this function grabs each daily weather record from the daily db
+func grabDailyHistory(c *gin.Context) {
+	// Get the database connection
+	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer conn.Close(context.Background())
+
+	// Get current month and day
+	now := time.Now()
+	month := now.Month()
+	day := now.Day()
+	// Get latitude and longitude from query parameters
+	latitude := c.Query("latitude")
+	longitude := c.Query("longitude")
+
+	if latitude == "" || longitude == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "latitude and longitude parameters are required"})
+		return
+	}
+
+	// Execute the SQL query using the provided latitude and longitude
+	rows, err := conn.Query(context.Background(),
+		`SELECT * FROM "Daily Historical Weather 2000" 
+		 WHERE EXTRACT(MONTH FROM date) = $1
+		 AND EXTRACT(DAY FROM date) = $2
+		 AND latitude = $3
+		 AND longitude = $4`,
+		month, day, latitude, longitude)
+
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("query failed: %v", err)})
+		return
+	}
+	defer rows.Close()
+
+	// Create a slice to hold the results
+	var results []map[string]interface{}
+
+	// Iterate over the rows
+	for rows.Next() {
+		// Create a map to hold the row data
+		rowData := make(map[string]interface{})
+
+		// Get column names
+		columnNames := rows.FieldDescriptions()
+		values := make([]interface{}, len(columnNames))
+		valuePtrs := make([]interface{}, len(columnNames))
+
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		// Scan the row into the value pointers
+		if err := rows.Scan(valuePtrs...); err != nil {
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to scan row: %v", err)})
+			return
+		}
+
+		// Map the values to their column names
+		for i, col := range columnNames {
+			rowData[string(col.Name)] = values[i]
+		}
+
+		// Append the row data to the results slice
+		results = append(results, rowData)
+	}
+
+	// Check for errors after iteration
+	if err := rows.Err(); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("row iteration error: %v", err)})
+		return
+	}
+
+	// Wrap the results in a JSON property called weather_data
+	c.IndentedJSON(http.StatusOK, gin.H{"weather_data": results})
 }
 
 // grab all weather from 2000-now and populate the history in the database for a given location
