@@ -55,10 +55,11 @@ func main() {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
 	// Test DB Connection
-	//testConnection()
+	testConnection()
 	router := gin.Default()
 	router.GET("/currentweather", getCurrentWeather)
 	router.GET("/dailyhistory", grabDailyHistory)
+	router.GET("/hourlyhistory", grabYearlyHourHistory)
 	router.GET("/populatehistory", populateHistory)
 	router.GET("/history", populateHistory)
 	// history migration routes, probably never need to use again
@@ -70,7 +71,7 @@ func main() {
 // Test the database connection and close it
 func testConnection() {
 	// Code from Supabase site to connect to DB
-	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	conn, err := pgx.Connect(context.Background(), os.Getenv("IPV4_CONNECTOR"))
 	if err != nil {
 		log.Fatalf("Failed to connect to the database: %v", err)
 	}
@@ -217,6 +218,97 @@ func grabDailyHistory(c *gin.Context) {
 		 AND latitude = $3
 		 AND longitude = $4`,
 		month, day, latitude, longitude)
+
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("query failed: %v", err)})
+		return
+	}
+	defer rows.Close()
+
+	// Create a slice to hold the results
+	var results []map[string]interface{}
+
+	// Iterate over the rows
+	for rows.Next() {
+		// Create a map to hold the row data
+		rowData := make(map[string]interface{})
+
+		// Get column names
+		columnNames := rows.FieldDescriptions()
+		values := make([]interface{}, len(columnNames))
+		valuePtrs := make([]interface{}, len(columnNames))
+
+		for i := range values {
+			valuePtrs[i] = &values[i]
+		}
+
+		// Scan the row into the value pointers
+		if err := rows.Scan(valuePtrs...); err != nil {
+			c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("failed to scan row: %v", err)})
+			return
+		}
+
+		// Map the values to their column names
+		for i, col := range columnNames {
+			rowData[string(col.Name)] = values[i]
+		}
+
+		// Append the row data to the results slice
+		results = append(results, rowData)
+	}
+
+	// Check for errors after iteration
+	if err := rows.Err(); err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("row iteration error: %v", err)})
+		return
+	}
+
+	// Wrap the results in a JSON property called weather_data
+	c.IndentedJSON(http.StatusOK, gin.H{"weather_data": results})
+}
+
+// this function grabs each daily weather record at the specified hour from the hourly db
+func grabYearlyHourHistory(c *gin.Context) {
+	// Get the database connection
+	conn, err := pgx.Connect(context.Background(), os.Getenv("IPV4_CONNECTOR"))
+	if err != nil {
+		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
+		return
+	}
+	defer conn.Close(context.Background())
+
+	// Get current month and day
+	now := time.Now()
+	month := now.Month()
+	day := now.Day()
+	// Get latitude and longitude from query parameters
+	latitude := c.Query("latitude")
+	longitude := c.Query("longitude")
+	hour := c.Query("hour")
+	if hour == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "hour parameter is required"})
+		return
+	}
+
+	// Ensure the hour is in the correct format "00:00:00"
+	if _, err := time.Parse("15:04:05", hour); err != nil {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "hour must be in the format HH:MM:SS"})
+		return
+	}
+	if latitude == "" || longitude == "" || hour == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "latitude, longitude, hour parameters are required"})
+		return
+	}
+
+	// Execute the SQL query using the provided latitude and longitude
+	rows, err := conn.Query(context.Background(),
+		`SELECT * FROM "Hourly Historical Weather Since 2000" 
+		 WHERE EXTRACT(MONTH FROM date) = $1
+		 AND EXTRACT(DAY FROM date) = $2
+		 AND hour = $3
+		 AND latitude = $4
+		 AND longitude = $5`,
+		month, day, hour, latitude, longitude)
 
 	if err != nil {
 		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": fmt.Sprintf("query failed: %v", err)})
