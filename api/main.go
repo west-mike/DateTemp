@@ -60,6 +60,7 @@ func main() {
 	router.GET("/currentweather", getCurrentWeather)
 	router.GET("/dailyhistory", grabDailyHistory)
 	router.GET("/hourlyhistory", grabYearlyHourHistory)
+	router.GET("/hourlyhistory/nonDB", grabNonDBYearlyHourHistory)
 	router.GET("/populatehistory", populateHistory)
 	router.GET("/history", populateHistory)
 	// history migration routes, probably never need to use again
@@ -356,6 +357,158 @@ func grabYearlyHourHistory(c *gin.Context) {
 
 	// Wrap the results in a JSON property called weather_data
 	c.IndentedJSON(http.StatusOK, gin.H{"weather_data": results})
+}
+
+// grabs yearly history for the current hour at a given location NOT in DB
+func grabNonDBYearlyHourHistory(c *gin.Context) {
+	// Get query parameters
+	latitude := c.Query("latitude")
+	longitude := c.Query("longitude")
+	hour := c.Query("hour")
+	date := c.Query("date") // Format YYYY-MM-DD
+
+	// Validate parameters
+	if date == "" || hour == "" || latitude == "" || longitude == "" {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "date, hour, latitude, and longitude parameters are required"})
+		return
+	}
+
+	// Parse the input date string to extract month and day (ignore year)
+	dateObj, err := time.Parse("2006-01-02", date)
+	if err != nil {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "date must be in the format YYYY-MM-DD"})
+		return
+	}
+
+	// Parse the hour string
+	hourObj, err := time.Parse("15:04:05", hour)
+	if err != nil {
+		c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "hour must be in the format HH:MM:SS"})
+		return
+	}
+
+	// Extract month, day and hour
+	month := dateObj.Month()
+	day := dateObj.Day()
+	hourValue := hourObj.Hour()
+
+	if gin.IsDebugging() {
+		fmt.Printf("[DEBUG] Querying historical data for month: %d, day: %d, hour: %d\n", month, day, hourValue)
+	}
+
+	// Initialize HTTP client
+	client := &http.Client{Timeout: 60 * time.Second}
+
+	// Store all weather data results
+	var allResults []map[string]interface{}
+
+	// URL for historical weather API
+	baseURL := "https://archive-api.open-meteo.com/v1/archive"
+
+	// Process each year from 2000 to 2024
+	for year := 2000; year <= 2024; year++ {
+		// Create date string for this year
+		queryDate := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
+
+		if gin.IsDebugging() {
+			fmt.Printf("[DEBUG] Querying weather for: %s\n", queryDate)
+		}
+
+		// Create request for this date
+		req, err := http.NewRequest("GET", baseURL, nil)
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to create request for %d: %v\n", year, err)
+			continue
+		}
+
+		// Build query parameters
+		query := req.URL.Query()
+		query.Add("latitude", latitude)
+		query.Add("longitude", longitude)
+		query.Add("start_date", queryDate)
+		query.Add("end_date", queryDate)
+		query.Add("hourly", "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code")
+		query.Add("temperature_unit", "fahrenheit")
+		query.Add("wind_speed_unit", "mph")
+		query.Add("precipitation_unit", "inch")
+		req.URL.RawQuery = query.Encode()
+
+		if gin.IsDebugging() {
+			fmt.Printf("[DEBUG] Request URL for %d: %s\n", year, req.URL.String())
+		}
+
+		// Make the HTTP request
+		resp, err := client.Do(req)
+		if err != nil {
+			fmt.Printf("[ERROR] Request failed for %d: %v\n", year, err)
+			continue
+		}
+
+		// Ensure response body is closed
+		defer resp.Body.Close()
+
+		// Check for successful response
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			fmt.Printf("[ERROR] API returned error for %d: %s\n", year, string(body))
+			continue
+		}
+
+		// Read the response body
+		body, err := io.ReadAll(resp.Body)
+		if err != nil {
+			fmt.Printf("[ERROR] Failed to read response for %d: %v\n", year, err)
+			continue
+		}
+
+		// Parse the JSON response
+		var weatherData historyWeatherObject
+		if err := json.Unmarshal(body, &weatherData); err != nil {
+			fmt.Printf("[ERROR] Failed to parse JSON for %d: %v\n", year, err)
+			continue
+		}
+
+		// Find the data for the requested hour
+		for i, timeStr := range weatherData.Hourly.Time {
+			// Parse the time from API
+			timeObj, err := time.Parse("2006-01-02T15:04", timeStr)
+			if err != nil {
+				continue
+			}
+
+			// Check if this is the hour we want
+			if timeObj.Hour() == hourValue {
+				// Create result object for this year
+				result := map[string]interface{}{
+					"year":                 year,
+					"date":                 queryDate,
+					"hour":                 hour,
+					"temperature":          weatherData.Hourly.Temperature2m[i],
+					"relative_humidity":    weatherData.Hourly.RelativeHumidity2m[i],
+					"apparent_temperature": weatherData.Hourly.ApparentTemperature[i],
+					"precipitation":        weatherData.Hourly.Precipitation[i],
+					"weather_code":         weatherData.Hourly.WeatherCode[i],
+					"latitude":             weatherData.Latitude,
+					"longitude":            weatherData.Longitude,
+				}
+
+				// Add to results
+				allResults = append(allResults, result)
+				break
+			}
+		}
+
+		// Add a small delay to avoid rate limiting
+		time.Sleep(100 * time.Millisecond)
+	}
+
+	// Return all results
+	if len(allResults) == 0 {
+		c.IndentedJSON(http.StatusNotFound, gin.H{"message": "No historical data found for the specified parameters"})
+		return
+	}
+
+	c.IndentedJSON(http.StatusOK, gin.H{"weather_data": allResults})
 }
 
 // grab all weather from 2000-now and populate the history in the database for a given location
