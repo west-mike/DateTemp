@@ -1,0 +1,2 @@
+# About
+Ever been fooled thinking spring is starting based on one warm day? Ever gotten snow in early October and been worried its winter already? DateTemp aims to help with this by letting you see the weather on the same day for the past 25 years, hopefully helping you avoid false optimism/pessimism.
