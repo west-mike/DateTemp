@@ -77,8 +77,8 @@ type DailyWeatherRecord struct {
 // send the history data to the database
 func SendHourlyHistoryToDB(filename string) {
 	// Supabase REST API configuration
-	supabaseURL := "https://bsztzmwbkzkmzhkepkwb.supabase.co/rest/v1/Hourly%20Historical%20Weather%20Since%202000"
-	supabaseAPIKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzenR6bXdia3prbXpoa2Vwa3diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMyODE2NDcsImV4cCI6MjA1ODg1NzY0N30.Q_SLkbdb-zGW1KOw8Uh0tfOfSOqZaeZfXWEDKMiW3nQ"
+	supabaseURL := os.Getenv("SUPABASE_DAILY_URL")
+	supabaseAPIKey := os.Getenv("SUPABASE_API_KEY")
 
 	// Read JSON file
 	fmt.Printf("Reading file: %s\n", filename)
@@ -198,8 +198,8 @@ func SendHourlyHistoryToDB(filename string) {
 
 func SendDailyHistoryToDB(filename string) {
 	// Supabase REST API configuration
-	supabaseURL := "https://bsztzmwbkzkmzhkepkwb.supabase.co/rest/v1/Daily%20Historical%20Weather%202000" // Change URL to point to daily table
-	supabaseAPIKey := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImJzenR6bXdia3prbXpoa2Vwa3diIiwicm9sZSI6ImFub24iLCJpYXQiOjE3NDMyODE2NDcsImV4cCI6MjA1ODg1NzY0N30.Q_SLkbdb-zGW1KOw8Uh0tfOfSOqZaeZfXWEDKMiW3nQ"
+	supabaseURL := os.Getenv("SUPABASE_DAILY_URL")
+	supabaseAPIKey := os.Getenv("SUPABASE_API_KEY")
 
 	// Read JSON file
 	fmt.Printf("Reading file: %s\n", filename)
