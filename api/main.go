@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -102,7 +103,21 @@ func getCurrentWeather(c *gin.Context) {
 		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "failed to create request"})
 		return
 	}
-
+	// if latitude and longitude are provided in the query parameters, use them instead
+	latitude := c.Query("latitude")
+	longitude := c.Query("longitude")
+	if latitude != "" && longitude != "" {
+		refreshCurWeatherQuery.Latitude, err = strconv.ParseFloat(latitude, 64)
+		if err != nil {
+			c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "invalid latitude"})
+			return
+		}
+		refreshCurWeatherQuery.Longitude, err = strconv.ParseFloat(longitude, 64)
+		if err != nil {
+			c.IndentedJSON(http.StatusBadRequest, gin.H{"error": "invalid longitude"})
+			return
+		}
+	}
 	// Add query parameters to the request
 	query := req.URL.Query()
 	query.Add("latitude", fmt.Sprintf("%f", refreshCurWeatherQuery.Latitude))
