@@ -13,6 +13,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/gin-contrib/cors"
 	"github.com/gin-gonic/gin"
 	"github.com/jackc/pgx/v5"
 	"github.com/joho/godotenv"
@@ -52,23 +53,38 @@ var currentWeatherData = currentWeatherObject{}
 
 func main() {
 	gin.SetMode(gin.ReleaseMode)
+
 	// Load .env file
 	if err := godotenv.Load(); err != nil {
 		log.Println("Warning: .env file not found, using environment variables")
 	}
+	port := os.Getenv("PORT")
+	if port == "" {
+		port = "8080" // Default port if not specified
+	}
 	// Test DB Connection
 	testConnection()
 	router := gin.Default()
+
+	// Configure CORS
+	router.Use(cors.New(cors.Config{
+		AllowOrigins:     []string{"https://westmike.com", "http://localhost:3000"},
+		AllowMethods:     []string{"GET", "POST", "OPTIONS"},
+		AllowHeaders:     []string{"Origin", "Content-Type"},
+		ExposeHeaders:    []string{"Content-Length"},
+		AllowCredentials: true,
+		MaxAge:           12 * time.Hour,
+	}))
+
 	router.GET("/currentweather", getCurrentWeather)
 	router.GET("/dailyhistory", grabDailyHistory)
 	router.GET("/hourlyhistory", grabYearlyHourHistory)
 	router.GET("/hourlyhistory/nonDB", grabNonDBYearlyHourHistory)
 	router.GET("/populatehistory", populateHistory)
-	router.GET("/history", populateHistory)
 	// history migration routes, probably never need to use again
 	router.GET("/history/migrate/hourly/:filename", migrateHourlyHistoryFile)
 	router.GET("/history/migrate/daily/:filename", migrateDailyHistoryFile)
-	router.Run("localhost:8080")
+	router.Run(":" + port)
 }
 
 // Test the database connection and close it
@@ -207,7 +223,7 @@ func getCurrentWeather(c *gin.Context) {
 // this function grabs each daily weather record from the daily db
 func grabDailyHistory(c *gin.Context) {
 	// Get the database connection
-	conn, err := pgx.Connect(context.Background(), os.Getenv("DATABASE_URL"))
+	conn, err := pgx.Connect(context.Background(), os.Getenv("IPV4_CONNECTOR"))
 	if err != nil {
 		c.IndentedJSON(http.StatusInternalServerError, gin.H{"error": "database connection failed"})
 		return
