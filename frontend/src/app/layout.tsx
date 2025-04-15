@@ -28,10 +28,10 @@ export default function RootLayout({
       <body
         className={`${geistSans.variable} ${geistMono.variable} antialiased  min-h-screen relative`}
       >
-        <div className="absolute top-4 left-4 text-3xl font-bold text-white">
+        <div className="absolute top-4 left-4 lg:text-3xl md:text-xl s:text-lg font-bold text-white">
           DateTemp
         </div>
-        <div className="absolute top-4 right-4 text-3xl font-bold text-white">
+        <div className="absolute top-4 right-4 lg:text-3xl md:text-xl s:text-lg font-bold text-white">
           <a href="https://www.westmike.com" target="_blank" rel="noopener noreferrer">By: Michael West</a>
         </div>
         <main className="min-h-screen">

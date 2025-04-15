@@ -69,7 +69,7 @@ const CompactLocationSearch: React.FC<CompactLocationSearchProps> = ({ onLocatio
     };
 
     return (
-        <div className="absolute top-14 left-4 z-10">
+        <div className="absolute top-10 lg:top-14 left-4 z-10">
             {isExpanded ? (
                 <div className="bg-white/20 backdrop-blur-sm rounded-lg p-3 shadow-lg w-64">
                     <form onSubmit={handleSubmit} className="space-y-2">
