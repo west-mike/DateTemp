@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/gin-contrib/cors"
@@ -428,111 +429,136 @@ func grabNonDBYearlyHourHistory(c *gin.Context) {
 		fmt.Printf("[DEBUG] Querying historical data for month: %d, day: %d, hour: %d\n", month, day, hourValue)
 	}
 
-	// Initialize HTTP client
-	client := &http.Client{Timeout: 60 * time.Second}
+	// Initialize HTTP client with a shared transport for connection reuse
+	tr := &http.Transport{
+		MaxIdleConnsPerHost: 30,
+		IdleConnTimeout:     30 * time.Second,
+	}
+	client := &http.Client{
+		Transport: tr,
+		Timeout:   60 * time.Second,
+	}
 
-	// Store all weather data results
+	// Store all weather data results with mutex for thread safety
 	var allResults []map[string]interface{}
+	var resultsMutex sync.Mutex
 
 	// URL for historical weather API
 	baseURL := "https://archive-api.open-meteo.com/v1/archive"
 
+	// wait group to synchronize all goroutines
+	var wg sync.WaitGroup
+
+	// Create a channel to limit concurrency (max 6 concurrent requests)
+	semaphore := make(chan struct{}, 6)
+
 	// Process each year from 2000 to 2024
 	for year := 2000; year <= 2024; year++ {
-		// Create date string for this year
-		queryDate := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
+		// Add to wait group before starting goroutine
+		wg.Add(1)
 
-		if gin.IsDebugging() {
-			fmt.Printf("[DEBUG] Querying weather for: %s\n", queryDate)
-		}
+		// Start a goroutine for each year
+		go func(year int) {
+			// Acquire semaphore slot (limit concurrency)
+			semaphore <- struct{}{}
+			// Release when done
+			defer func() {
+				<-semaphore
+				wg.Done()
+			}()
 
-		// Create request for this date
-		req, err := http.NewRequest("GET", baseURL, nil)
-		if err != nil {
-			fmt.Printf("[ERROR] Failed to create request for %d: %v\n", year, err)
-			continue
-		}
+			// Create date string for this year
+			queryDate := fmt.Sprintf("%04d-%02d-%02d", year, month, day)
 
-		// Build query parameters
-		query := req.URL.Query()
-		query.Add("latitude", latitude)
-		query.Add("longitude", longitude)
-		query.Add("start_date", queryDate)
-		query.Add("end_date", queryDate)
-		query.Add("hourly", "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code")
-		query.Add("temperature_unit", "fahrenheit")
-		query.Add("wind_speed_unit", "mph")
-		query.Add("precipitation_unit", "inch")
-		req.URL.RawQuery = query.Encode()
-
-		if gin.IsDebugging() {
-			fmt.Printf("[DEBUG] Request URL for %d: %s\n", year, req.URL.String())
-		}
-
-		// Make the HTTP request
-		resp, err := client.Do(req)
-		if err != nil {
-			fmt.Printf("[ERROR] Request failed for %d: %v\n", year, err)
-			continue
-		}
-
-		// Ensure response body is closed
-		defer resp.Body.Close()
-
-		// Check for successful response
-		if resp.StatusCode != http.StatusOK {
-			body, _ := io.ReadAll(resp.Body)
-			fmt.Printf("[ERROR] API returned error for %d: %s\n", year, string(body))
-			continue
-		}
-
-		// Read the response body
-		body, err := io.ReadAll(resp.Body)
-		if err != nil {
-			fmt.Printf("[ERROR] Failed to read response for %d: %v\n", year, err)
-			continue
-		}
-
-		// Parse the JSON response
-		var weatherData historyWeatherObject
-		if err := json.Unmarshal(body, &weatherData); err != nil {
-			fmt.Printf("[ERROR] Failed to parse JSON for %d: %v\n", year, err)
-			continue
-		}
-
-		// Find the data for the requested hour
-		for i, timeStr := range weatherData.Hourly.Time {
-			// Parse the time from API
-			timeObj, err := time.Parse("2006-01-02T15:04", timeStr)
-			if err != nil {
-				continue
+			if gin.IsDebugging() {
+				fmt.Printf("[DEBUG] Querying weather for year %d: %s\n", year, queryDate)
 			}
 
-			// Check if this is the hour we want
-			if timeObj.Hour() == hourValue {
-				// Create result object for this year
-				result := map[string]interface{}{
-					"year":                 year,
-					"date":                 queryDate,
-					"hour":                 hour,
-					"temperature":          weatherData.Hourly.Temperature2m[i],
-					"relative_humidity":    weatherData.Hourly.RelativeHumidity2m[i],
-					"apparent_temperature": weatherData.Hourly.ApparentTemperature[i],
-					"precipitation":        weatherData.Hourly.Precipitation[i],
-					"weather_code":         weatherData.Hourly.WeatherCode[i],
-					"latitude":             weatherData.Latitude,
-					"longitude":            weatherData.Longitude,
+			// Create request for this date
+			req, err := http.NewRequest("GET", baseURL, nil)
+			if err != nil {
+				fmt.Printf("[ERROR] Failed to create request for %d: %v\n", year, err)
+				return
+			}
+
+			// Build query parameters
+			query := req.URL.Query()
+			query.Add("latitude", latitude)
+			query.Add("longitude", longitude)
+			query.Add("start_date", queryDate)
+			query.Add("end_date", queryDate)
+			query.Add("hourly", "temperature_2m,relative_humidity_2m,apparent_temperature,precipitation,weather_code")
+			query.Add("temperature_unit", "fahrenheit")
+			query.Add("wind_speed_unit", "mph")
+			query.Add("precipitation_unit", "inch")
+			req.URL.RawQuery = query.Encode()
+
+			// Make the HTTP request
+			resp, err := client.Do(req)
+			if err != nil {
+				fmt.Printf("[ERROR] Request failed for %d: %v\n", year, err)
+				return
+			}
+			defer resp.Body.Close()
+
+			// Check for successful response
+			if resp.StatusCode != http.StatusOK {
+				body, _ := io.ReadAll(resp.Body)
+				fmt.Printf("[ERROR] API returned error for %d: %s\n", year, string(body))
+				return
+			}
+
+			// Read the response body
+			body, err := io.ReadAll(resp.Body)
+			if err != nil {
+				fmt.Printf("[ERROR] Failed to read response for %d: %v\n", year, err)
+				return
+			}
+
+			// Parse the JSON response
+			var weatherData historyWeatherObject
+			if err := json.Unmarshal(body, &weatherData); err != nil {
+				fmt.Printf("[ERROR] Failed to parse JSON for %d: %v\n", year, err)
+				return
+			}
+
+			// Find the data for the requested hour
+			for i, timeStr := range weatherData.Hourly.Time {
+				// Parse the time from API
+				timeObj, err := time.Parse("2006-01-02T15:04", timeStr)
+				if err != nil {
+					continue
 				}
 
-				// Add to results
-				allResults = append(allResults, result)
-				break
-			}
-		}
+				// Check if this is the hour we want
+				if timeObj.Hour() == hourValue {
+					// Create result object for this year
+					result := map[string]interface{}{
+						"year":                 year,
+						"date":                 queryDate,
+						"hour":                 hour,
+						"temperature":          weatherData.Hourly.Temperature2m[i],
+						"relative_humidity":    weatherData.Hourly.RelativeHumidity2m[i],
+						"apparent_temperature": weatherData.Hourly.ApparentTemperature[i],
+						"precipitation":        weatherData.Hourly.Precipitation[i],
+						"weather_code":         weatherData.Hourly.WeatherCode[i],
+						"latitude":             weatherData.Latitude,
+						"longitude":            weatherData.Longitude,
+					}
 
-		// Add a small delay to avoid rate limiting
-		time.Sleep(100 * time.Millisecond)
+					// Add to results with mutex protection
+					resultsMutex.Lock()
+					allResults = append(allResults, result)
+					resultsMutex.Unlock()
+					break
+				}
+			}
+
+		}(year)
 	}
+
+	// Wait for all goroutines to complete
+	wg.Wait()
 
 	// Return all results
 	if len(allResults) == 0 {
