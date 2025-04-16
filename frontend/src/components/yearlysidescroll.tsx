@@ -51,9 +51,9 @@ const YearlySideScroll: React.FC<YearlySideScrollProps> = ({
         );
     }
 
-    // Sort data by year from oldest to newest
+    // Sort data by year from newest to oldest
     const sortedData = [...weatherData].sort((a, b) => {
-        return new Date(a.date).getTime() - new Date(b.date).getTime();
+        return new Date(b.date).getTime() - new Date(a.date).getTime();
     });
 
     return (
